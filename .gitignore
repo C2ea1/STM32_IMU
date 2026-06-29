@@ -1,0 +1,21 @@
+# Build directories
+build/
+Build/
+CMakeFiles/
+CMakeCache.txt
+Makefile
+cmake_install.cmake
+
+# Compiled binaries
+*.elf
+*.hex
+*.bin
+*.map
+*.o
+*.d
+
+# Local VS Code files (excluding tracked settings)
+.vscode/ipch/
+.vscode/*.log
+.vscode/browse.vc.db
+.vscode/c_cpp_properties.json

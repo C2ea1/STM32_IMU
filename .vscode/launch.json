@@ -1,0 +1,34 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        
+        {
+            "name": "DAPLink Debug (pyOCD - Recommended)",
+            "cwd": "${workspaceFolder}",
+            "executable": "${workspaceFolder}/build/Debug/IMU.elf",
+            "request": "launch",
+            "type": "cortex-debug",
+            "runToEntryPoint": "main",
+            "servertype": "pyocd",
+            "targetId": "stm32f407zg",
+            "gdbPath": "C:/Users/Still/AppData/Local/stm32cube/bundles/gnu-tools-for-stm32/14.3.1+st.2/bin/arm-none-eabi-gdb.exe"
+        },
+        
+        {
+            "name": "DAPLink Debug (OpenOCD)",
+            "cwd": "${workspaceFolder}",
+            "executable": "${workspaceFolder}/build/Debug/IMU.elf",
+            "request": "launch",
+            "type": "cortex-debug",
+            "runToEntryPoint": "main",
+            "servertype": "openocd",
+            "configFiles": [
+                "interface/cmsis-dap.cfg",
+                "target/stm32f4x.cfg"
+            ],
+            "interface": "swd",
+            "serverpath": "C:/Users/Still/openocd/bin/openocd.exe",
+            "gdbPath": "C:/Users/Still/AppData/Local/stm32cube/bundles/gnu-tools-for-stm32/14.3.1+st.2/bin/arm-none-eabi-gdb.exe"
+        }
+    ]
+}

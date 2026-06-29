@@ -1,0 +1,48 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build Project",
+            "type": "shell",
+            "command": "cmake --build build/Debug",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": "$gcc"
+        },
+        {
+            "label": "Flash (stm32flash)",
+            "type": "shell",
+            "command": "C:\\Users\\Still\\stm32flash\\stm32flash-0.7-binaries\\stm32flash.exe",
+            "args": [
+                "-b",
+                "115200",
+                "-i",
+                "rts&-dtr,dtr,:-rts&-dtr,dtr",
+                "-w",
+                "${workspaceFolder}/build/Debug/IMU.hex",
+                "-v",
+                "-g",
+                "0x0",
+                "COM9"
+            ],
+            "group": "build",
+            "dependsOn": "Build Project",
+            "problemMatcher": []
+        },
+        {
+            "label": "Monitor Serial Port",
+            "type": "shell",
+            "command": "powershell.exe",
+            "args": [
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/monitor.ps1"
+            ],
+            "group": "none",
+            "problemMatcher": []
+        }
+    ]
+}
