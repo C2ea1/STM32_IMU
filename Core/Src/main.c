@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "dma.h"
 #include "usart.h"
 #include "gpio.h"
 
@@ -45,18 +46,33 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
+#define GYRO_COUNT  2  // Configure number of active gyroscopes here (1 to 5)
+
 typedef struct {
     float acc[3];
     float gyro[3];
     float angle[3];
+    float temp;
+    uint32_t timestamp;
 } GyroData_t;
 
-GyroData_t g_gyro;
-volatile uint8_t g_data_update_flag = 0;
+typedef struct {
+    UART_HandleTypeDef *huart;
+    uint8_t rx_buf[64];
+    GyroData_t data;
+    volatile uint8_t updated;
+} GyroDevice_t;
 
-// Packet buffer
-uint8_t rx_buf[11];
-uint8_t rx_cnt = 0;
+GyroDevice_t g_gyros[GYRO_COUNT];
+
+// List of available UART handles in order of index (unused are set to NULL)
+UART_HandleTypeDef *const g_huart_list[5] = {
+    &huart2,  // Gyro 1 (USART2)
+    &huart3,  // Gyro 2 (USART3)
+    NULL,     // Gyro 3 (UART4 - Not enabled yet)
+    NULL,     // Gyro 4 (UART5 - Not enabled yet)
+    NULL      // Gyro 5 (USART6 - Not enabled yet)
+};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -73,45 +89,102 @@ int _write(int file, char *ptr, int len) {
     return len;
 }
 
-// Process raw serial byte
-void ProcessGyroByte(uint8_t data) {
-    if (rx_cnt == 0 && data != 0x55) {
-        return; // Wait for header
-    }
-    rx_buf[rx_cnt++] = data;
-    if (rx_cnt >= 11) {
-        uint8_t sum = 0;
-        for (int i = 0; i < 10; i++) {
-            sum += rx_buf[i];
+// Custom Wit-Motion packet parser
+void ParseGyroBuffer(GyroDevice_t *device, uint16_t len) {
+    uint16_t i = 0;
+    while (i + 11 <= len) {
+        if (device->rx_buf[i] != 0x55) {
+            i++;
+            continue;
         }
-        if (sum == rx_buf[10]) {
-            // Valid frame! Feed it to SDK
-            for (int i = 0; i < 11; i++) {
-                WitSerialDataIn(rx_buf[i]);
+        uint8_t sum = 0;
+        for (uint16_t j = 0; j < 10; j++) {
+            sum += device->rx_buf[i + j];
+        }
+        if (sum == device->rx_buf[i + 10]) {
+            uint8_t *pkg = &(device->rx_buf[i]);
+            uint8_t pkg_type = pkg[1];
+            int16_t d0 = (int16_t)((pkg[3] << 8) | pkg[2]);
+            int16_t d1 = (int16_t)((pkg[5] << 8) | pkg[4]);
+            int16_t d2 = (int16_t)((pkg[7] << 8) | pkg[6]);
+            int16_t d3 = (int16_t)((pkg[9] << 8) | pkg[8]);
+            
+            switch (pkg_type) {
+                case 0x51: // Acceleration
+                    device->data.acc[0] = d0 / 32768.0f * 16.0f;
+                    device->data.acc[1] = d1 / 32768.0f * 16.0f;
+                    device->data.acc[2] = d2 / 32768.0f * 16.0f;
+                    device->data.temp   = d3 / 100.0f;
+                    break;
+                case 0x52: // Angular Velocity (Gyro)
+                    device->data.gyro[0] = d0 / 32768.0f * 2000.0f;
+                    device->data.gyro[1] = d1 / 32768.0f * 2000.0f;
+                    device->data.gyro[2] = d2 / 32768.0f * 2000.0f;
+                    break;
+                case 0x53: // Angle
+                    device->data.angle[0] = d0 / 32768.0f * 180.0f;
+                    device->data.angle[1] = d1 / 32768.0f * 180.0f;
+                    device->data.angle[2] = d2 / 32768.0f * 180.0f;
+                    device->updated = 1;
+                    break;
+                default:
+                    break;
+            }
+            i += 11;
+        } else {
+            i++;
+        }
+    }
+}
+
+// Callback for receive idle / half-cplt / cplt events
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
+    for (int i = 0; i < GYRO_COUNT; i++) {
+        if (g_gyros[i].huart != NULL && huart->Instance == g_gyros[i].huart->Instance) {
+            // Capture hardware timestamp
+            g_gyros[i].data.timestamp = HAL_GetTick();
+            
+            // Parse buffer
+            ParseGyroBuffer(&g_gyros[i], Size);
+            
+            // Restart DMA Idle reception
+            HAL_UARTEx_ReceiveToIdle_DMA(g_gyros[i].huart, g_gyros[i].rx_buf, sizeof(g_gyros[i].rx_buf));
+            break;
+        }
+    }
+}
+
+// Configurable Initialization helper
+void Gyro_System_Init(void) {
+    for (int i = 0; i < GYRO_COUNT; i++) {
+        g_gyros[i].huart = g_huart_list[i];
+        g_gyros[i].updated = 0;
+        memset(&(g_gyros[i].data), 0, sizeof(GyroData_t));
+        
+        if (g_gyros[i].huart != NULL) {
+            // Start DMA receive to idle
+            HAL_UARTEx_ReceiveToIdle_DMA(g_gyros[i].huart, g_gyros[i].rx_buf, sizeof(g_gyros[i].rx_buf));
+        }
+    }
+}
+
+// DMA Watchdog to self-recover from hangs
+void CheckAndRecoverDMA(void) {
+    static uint32_t last_check = 0;
+    uint32_t now = HAL_GetTick();
+    if (now - last_check > 500) {
+        last_check = now;
+        for (int i = 0; i < GYRO_COUNT; i++) {
+            if (g_gyros[i].huart != NULL) {
+                // If the UART state is READY, it means the DMA was stopped due to an error/hang
+                if (g_gyros[i].huart->RxState == HAL_UART_STATE_READY) {
+                    HAL_UART_AbortReceive(g_gyros[i].huart);
+                    HAL_UARTEx_ReceiveToIdle_DMA(g_gyros[i].huart, g_gyros[i].rx_buf, sizeof(g_gyros[i].rx_buf));
+                    printf("Warning: DMA channel %d recovered!\r\n", i);
+                }
             }
         }
-        rx_cnt = 0;
     }
-}
-
-// SDK Callback on register updates
-void SensorDataUpdata(uint32_t uiReg, uint32_t uiRegNum) {
-    for (int i = 0; i < 3; i++) {
-        g_gyro.acc[i]   = sReg[AX+i] / 32768.0f * 16.0f;
-        g_gyro.gyro[i]  = sReg[GX+i] / 32768.0f * 2000.0f;
-        g_gyro.angle[i] = sReg[Roll+i] / 32768.0f * 180.0f;
-    }
-    g_data_update_flag = 1;
-}
-
-// SDK Callback to write serial data
-static void SensorUartSend(uint8_t *p_data, uint32_t uiSize) {
-    HAL_UART_Transmit(&huart2, p_data, uiSize, 10);
-}
-
-// Delay helper for SDK
-static void Delayms(uint16_t ucMs) {
-    HAL_Delay(ucMs);
 }
 /* USER CODE END 0 */
 
@@ -144,18 +217,13 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_USART1_UART_Init();
   MX_USART2_UART_Init();
+  MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
-  WitInit(WIT_PROTOCOL_NORMAL, 0x50);
-  WitSerialWriteRegister(SensorUartSend);
-  WitRegisterCallBack(SensorDataUpdata);
-  WitDelayMsRegister(Delayms);
-  
-  // Enable USART2 RXNE interrupt
-  __HAL_UART_ENABLE_IT(&huart2, UART_IT_RXNE);
-  
-  printf("Single IMU test project started!\r\n");
+  Gyro_System_Init();
+  printf("Multi-Gyroscope (%d channels) System Started!\r\n", GYRO_COUNT);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -165,14 +233,20 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    if (g_data_update_flag) {
-        g_data_update_flag = 0;
-        printf("Acc: %.3f %.3f %.3f | Gyro: %.3f %.3f %.3f | Angle: %.2f %.2f %.2f\r\n",
-               g_gyro.acc[0], g_gyro.acc[1], g_gyro.acc[2],
-               g_gyro.gyro[0], g_gyro.gyro[1], g_gyro.gyro[2],
-               g_gyro.angle[0], g_gyro.angle[1], g_gyro.angle[2]);
+    CheckAndRecoverDMA();
+
+    // Check and print data for each gyroscope dynamically
+    for (int i = 0; i < GYRO_COUNT; i++) {
+        if (g_gyros[i].updated) {
+            g_gyros[i].updated = 0;
+            printf("Gyro[%d] [T:%lu] Acc: %.3f %.3f %.3f | Gyro: %.3f %.3f %.3f | Angle: %.2f %.2f %.2f\r\n",
+                   i, g_gyros[i].data.timestamp,
+                   g_gyros[i].data.acc[0], g_gyros[i].data.acc[1], g_gyros[i].data.acc[2],
+                   g_gyros[i].data.gyro[0], g_gyros[i].data.gyro[1], g_gyros[i].data.gyro[2],
+                   g_gyros[i].data.angle[0], g_gyros[i].data.angle[1], g_gyros[i].data.angle[2]);
+        }
     }
-    HAL_Delay(10); // Sleep briefly
+    HAL_Delay(1); // Sleep briefly
   }
   /* USER CODE END 3 */
 }

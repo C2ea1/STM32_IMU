@@ -194,37 +194,40 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
 
 ---
 
-## 5. DMA 故障自愈与系统拓展性
+## 5. DMA 故障自愈与系统初始化设计
 
-### 5.1 DMA 故障自愈机制
-在实际工业现场或复杂的连线环境下，单片机容易受到静电、电磁干扰或者热插拔抖动的影响，导致 DMA 传输出现错误并挂死（停止接收）。
-为了实现系统自愈，我们可以在主循环中增加一个软件“看门狗”检测机制：
+### 5.1 动态初始化与串口映射列表 (一键配置设计)
+为了使陀螺仪个数完全可配置，我们在软件中定义一个常量指针数组，依次列出所有可用的串口硬件句柄。这样，只需在宏定义中修改 `GYRO_COUNT`，初始化循环就会自动绑定相应数量的串口并开启 DMA，无需再手动修改多行初始化代码：
 
 ```c
-void CheckAndRecoverDMA(void) {
-    static uint32_t last_check_time = 0;
-    uint32_t now = HAL_GetTick();
-    
-    // 每隔 500ms 检查一次各个 DMA 通道的状态
-    if (now - last_check_time > 500) {
-        last_check_time = now;
+// 1. 在 main.h 或 main.c 中定义可配置的陀螺仪个数
+#define GYRO_COUNT  2  // 本期接入 2 个，未来可以直接修改为 3 ~ 5
+
+// 2. 串口映射列表 (按顺序存放可用串口，必须与 CubeMX 中使能的串口一致)
+UART_HandleTypeDef *const g_huart_list[5] = {
+    &huart2,  // Gyro 1 (USART2)
+    &huart3,  // Gyro 2 (USART3)
+    &huart4,  // Gyro 3 (UART4)
+    &huart5,  // Gyro 4 (UART5)
+    &huart6   // Gyro 5 (USART6)
+};
+
+// 3. 一键初始化循环
+void Gyro_System_Init(void) {
+    for (int i = 0; i < GYRO_COUNT; i++) {
+        g_gyros[i].huart = g_huart_list[i];
+        g_gyros[i].updated = 0;
+        memset(&(g_gyros[i].data), 0, sizeof(GyroData_t));
         
-        for (int i = 0; i < GYRO_COUNT; i++) {
-            // 如果 500ms 内该通道没有更新数据，且 DMA 状态不为 BUSY（或者已经挂起停止了）
-            if (g_gyros[i].huart->RxState == HAL_UART_STATE_READY) {
-                // 说明 DMA 接收异常终止，执行自愈：强行重启 DMA 接收
-                HAL_UART_AbortReceive(g_gyros[i].huart);
-                HAL_UART_Ex_ReceiveToIdle_DMA(g_gyros[i].huart, g_gyros[i].rx_buf, 64);
-                printf("Warning: DMA channel %d recovered from fault!\r\n", i);
-            }
-        }
+        // 开启当前通道的 DMA + 空闲中断接收
+        HAL_UART_Ex_ReceiveToIdle_DMA(g_gyros[i].huart, g_gyros[i].rx_buf, sizeof(g_gyros[i].rx_buf));
     }
 }
 ```
 
-### 5.2 软件“看门狗”自愈机制
+### 5.2 DMA 软件自愈机制
 在实际工业现场或复杂的连线环境下，单片机容易受到静电、电磁干扰或者热插拔接线抖动的影响，导致 DMA 传输出现错误并挂死（停止接收）。
-为了实现系统自愈，我们可以在主循环中增加一个软件检测机制：
+为了实现系统自愈，我们可以在主循环中增加一个软件检测机制，同样由 `GYRO_COUNT` 自动驱动：
 
 ```c
 void CheckAndRecoverDMA(void) {
@@ -236,11 +239,11 @@ void CheckAndRecoverDMA(void) {
         last_check_time = now;
         
         for (int i = 0; i < GYRO_COUNT; i++) {
-            // 如果 500ms 内该通道没有更新数据，且 DMA 状态不为 BUSY（或者已经挂起停止了）
+            // 如果 500ms 内该通道没有更新数据，且 DMA 状态为 READY (说明 DMA 被异常终止了)
             if (g_gyros[i].huart->RxState == HAL_UART_STATE_READY) {
-                // 说明 DMA 接收异常终止，执行自愈：强行重启 DMA 接收
+                // 执行自愈：强行重启 DMA 接收
                 HAL_UART_AbortReceive(g_gyros[i].huart);
-                HAL_UART_Ex_ReceiveToIdle_DMA(g_gyros[i].huart, g_gyros[i].rx_buf, 64);
+                HAL_UART_Ex_ReceiveToIdle_DMA(g_gyros[i].huart, g_gyros[i].rx_buf, sizeof(g_gyros[i].rx_buf));
                 printf("Warning: DMA channel %d recovered from fault!\r\n", i);
             }
         }
