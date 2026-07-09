@@ -52,6 +52,7 @@ typedef struct {
     float acc[3];
     float gyro[3];
     float angle[3];
+    float mag[3];
     float temp;
     uint32_t timestamp;
 } GyroData_t;
@@ -126,6 +127,11 @@ void ParseGyroBuffer(GyroDevice_t *device, uint16_t len) {
                     device->data.angle[1] = d1 / 32768.0f * 180.0f;
                     device->data.angle[2] = d2 / 32768.0f * 180.0f;
                     device->updated = 1;
+                    break;
+                case 0x54: // Magnetic Field (mG)
+                    device->data.mag[0] = (float)d0;
+                    device->data.mag[1] = (float)d1;
+                    device->data.mag[2] = (float)d2;
                     break;
                 default:
                     break;
@@ -241,11 +247,12 @@ int main(void)
     for (int i = 0; i < GYRO_COUNT; i++) {
         if (g_gyros[i].updated) {
             g_gyros[i].updated = 0;
-            printf("Gyro[%d] [T:%lu] Acc: %.3f %.3f %.3f | Gyro: %.3f %.3f %.3f | Angle: %.2f %.2f %.2f\r\n",
+            printf("Gyro[%d] [T:%lu] Acc: %.3f %.3f %.3f | Gyro: %.3f %.3f %.3f | Angle: %.2f %.2f %.2f | Mag: %.1f %.1f %.1f\r\n",
                    i, g_gyros[i].data.timestamp,
                    g_gyros[i].data.acc[0], g_gyros[i].data.acc[1], g_gyros[i].data.acc[2],
                    g_gyros[i].data.gyro[0], g_gyros[i].data.gyro[1], g_gyros[i].data.gyro[2],
-                   g_gyros[i].data.angle[0], g_gyros[i].data.angle[1], g_gyros[i].data.angle[2]);
+                   g_gyros[i].data.angle[0], g_gyros[i].data.angle[1], g_gyros[i].data.angle[2],
+                   g_gyros[i].data.mag[0], g_gyros[i].data.mag[1], g_gyros[i].data.mag[2]);
         }
     }
     HAL_Delay(1); // Sleep briefly
