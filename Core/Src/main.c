@@ -46,7 +46,7 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-#define GYRO_COUNT  2  // Configure number of active gyroscopes here (1 to 5)
+#define GYRO_COUNT  4  // Configure number of active gyroscopes here (1 to 5)
 
 typedef struct {
     float acc[3];
@@ -69,8 +69,8 @@ GyroDevice_t g_gyros[GYRO_COUNT];
 UART_HandleTypeDef *const g_huart_list[5] = {
     &huart2,  // Gyro 1 (USART2)
     &huart3,  // Gyro 2 (USART3)
-    NULL,     // Gyro 3 (UART4 - Not enabled yet)
-    NULL,     // Gyro 4 (UART5 - Not enabled yet)
+    &huart4,  // Gyro 3 (UART4)
+    &huart5,  // Gyro 4 (UART5)
     NULL      // Gyro 5 (USART6 - Not enabled yet)
 };
 /* USER CODE END PV */
@@ -221,6 +221,8 @@ int main(void)
   MX_USART1_UART_Init();
   MX_USART2_UART_Init();
   MX_USART3_UART_Init();
+  MX_UART4_Init();
+  MX_UART5_Init();
   /* USER CODE BEGIN 2 */
   Gyro_System_Init();
   printf("Multi-Gyroscope (%d channels) System Started!\r\n", GYRO_COUNT);
