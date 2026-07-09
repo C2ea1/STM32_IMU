@@ -47,6 +47,8 @@
 
 /* USER CODE BEGIN PV */
 #define GYRO_COUNT  4  // Configure number of active gyroscopes here (1 to 5)
+#define DEBUG_PRINT_MODE  1  // 1: ASCII Debug Print to PC, 0: Binary RS485 Transmit to Host
+#define SLAVE_TX_INTERVAL_MS 40 // 40ms interval (25Hz) - extremely safe for 115200 baud
 
 typedef struct {
     float acc[3];
@@ -74,6 +76,24 @@ UART_HandleTypeDef *const g_huart_list[5] = {
     &huart5,  // Gyro 4 (UART5)
     NULL      // Gyro 5 (USART6 - Not enabled yet)
 };
+
+#pragma pack(push, 1)
+typedef struct {
+    float acc[3];      // 12 bytes
+    float gyro[3];     // 12 bytes
+    float angle[3];    // 12 bytes
+    float mag[3];      // 12 bytes
+    float temp;        // 4 bytes
+} GyroPacket_t;        // 52 bytes
+
+typedef struct {
+    uint8_t header[2];  // 0xAA, 0xBB (2 bytes)
+    uint32_t timestamp; // Slave system tick (4 bytes)
+    GyroPacket_t gyros[4]; // 4 gyroscopes (208 bytes)
+    uint8_t checksum;   // Sum checksum of all preceding bytes (1 byte)
+    uint8_t tail;       // 0xEE (1 byte)
+} SlaveFrame_t;        // Total: 216 bytes
+#pragma pack(pop)
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -88,6 +108,34 @@ void SystemClock_Config(void);
 int _write(int file, char *ptr, int len) {
     HAL_UART_Transmit(&huart1, (uint8_t*)ptr, len, 0xFFFF);
     return len;
+}
+
+// Pack 4 gyroscopes' data into a binary frame and transmit over USART1
+void SendSlaveDataToHost(void) {
+    SlaveFrame_t frame;
+    frame.header[0] = 0xAA;
+    frame.header[1] = 0xBB;
+    frame.timestamp = HAL_GetTick();
+    
+    for (int i = 0; i < 4; i++) {
+        memcpy(frame.gyros[i].acc, g_gyros[i].data.acc, sizeof(frame.gyros[i].acc));
+        memcpy(frame.gyros[i].gyro, g_gyros[i].data.gyro, sizeof(frame.gyros[i].gyro));
+        memcpy(frame.gyros[i].angle, g_gyros[i].data.angle, sizeof(frame.gyros[i].angle));
+        memcpy(frame.gyros[i].mag, g_gyros[i].data.mag, sizeof(frame.gyros[i].mag));
+        frame.gyros[i].temp = g_gyros[i].data.temp;
+    }
+    
+    // Calculate checksum (sum of all bytes from timestamp to gyros)
+    uint8_t sum = 0;
+    uint8_t *ptr = (uint8_t*)&frame;
+    for (uint32_t i = 2; i < sizeof(SlaveFrame_t) - 2; i++) {
+        sum += ptr[i];
+    }
+    frame.checksum = sum;
+    frame.tail = 0xEE;
+    
+    // Transmit over USART1
+    HAL_UART_Transmit(&huart1, (uint8_t*)&frame, sizeof(SlaveFrame_t), 100);
 }
 
 // Custom Wit-Motion packet parser
@@ -243,7 +291,8 @@ int main(void)
     /* USER CODE BEGIN 3 */
     CheckAndRecoverDMA();
 
-    // Check and print data for each gyroscope dynamically
+    #if DEBUG_PRINT_MODE
+    // Check and print data for each gyroscope dynamically (ASCII mode)
     for (int i = 0; i < GYRO_COUNT; i++) {
         if (g_gyros[i].updated) {
             g_gyros[i].updated = 0;
@@ -255,6 +304,15 @@ int main(void)
                    g_gyros[i].data.mag[0], g_gyros[i].data.mag[1], g_gyros[i].data.mag[2]);
         }
     }
+    #else
+    // Binary communication mode: Pack and send at SLAVE_TX_INTERVAL_MS (25Hz)
+    static uint32_t last_tx = 0;
+    uint32_t now = HAL_GetTick();
+    if (now - last_tx >= SLAVE_TX_INTERVAL_MS) {
+        last_tx = now;
+        SendSlaveDataToHost();
+    }
+    #endif
     HAL_Delay(1); // Sleep briefly
   }
   /* USER CODE END 3 */
